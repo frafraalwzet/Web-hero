@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#071426">
+<title>WEB HERO — Infinite City</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071426;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none}
+#game{display:block;width:100%;height:100%;touch-action:none}
+.hud{position:fixed;inset:0;pointer-events:none;color:#fff}
+.top{position:absolute;top:env(safe-area-inset-top,10px);left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.brand{font-weight:900;font-size:clamp(15px,4vw,23px);letter-spacing:1px;text-shadow:0 2px 10px #00d9ff88}
+.stats{background:#071426b8;border:1px solid #67dfff55;border-radius:12px;padding:7px 10px;font-size:12px;line-height:1.45;min-width:90px}
+.help{position:absolute;top:64px;left:12px;max-width:58%;font-size:11px;color:#d9f7ff;background:#0714269c;border-radius:9px;padding:7px 9px}
+.controls{position:absolute;bottom:calc(12px + env(safe-area-inset-bottom,0px));left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-end;gap:8px}
+.joy{width:124px;height:124px;border-radius:50%;border:2px solid #b9f4ff88;background:#0c244c99;position:relative;pointer-events:auto;touch-action:none;flex:none}
+.stick{position:absolute;width:48px;height:48px;border-radius:50%;left:36px;top:36px;background:#5be6ffcc;border:2px solid #fff;box-shadow:0 0 18px #00d9ff88}
+.actions{display:grid;grid-template-columns:repeat(2,minmax(76px,92px));gap:8px;pointer-events:auto}
+button{border:1px solid #b9f4ff99;background:#0c244ce8;color:white;font-weight:900;letter-spacing:.5px;border-radius:14px;min-height:52px;padding:8px;font-size:12px;box-shadow:0 4px 0 #020914;touch-action:none}
+button:active,button.active{background:#08a9d4;color:#00131b;transform:translateY(2px);box-shadow:0 2px 0 #020914}
+#swing{background:#00bfe7;color:#00131b;border-color:#d9fbff}
+#toast{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);font-size:14px;font-weight:800;text-align:center;text-shadow:0 2px 12px #000;opacity:0;transition:opacity .15s;white-space:nowrap}
+@media(min-width:700px){.joy{width:145px;height:145px}.stick{width:54px;height:54px;left:43px;top:43px}.actions{grid-template-columns:repeat(2,100px)}button{min-height:58px}.help{font-size:13px;max-width:420px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud">
+ <div class="top"><div class="brand">🕸️ WEB HERO</div><div class="stats">DISTANS <b id="dist">0</b> m<br>FART <b id="speed">0</b></div></div>
+ <div class="help">Dra joysticken för att styra. HOPP för att hoppa. SVINGA fäster i en synlig byggnad. Håll BROMS för att sakta ner.</div>
+ <div id="toast"></div>
+ <div class="controls">
+  <div class="joy" id="joy"><div class="stick" id="stick"></div></div>
+  <div class="actions">
+   <button id="brake">BROMS</button><button id="jump">HOPP</button>
+   <button id="swing">SVINGA</button><button id="reset">BÖRJA OM</button>
+  </div>
+ </div>
+</div>
+<script>
+(()=>{
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const $=id=>document.getElementById(id);
+let W=innerWidth,H=innerHeight,dpr=1;
+function resize(){dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=Math.floor(W*dpr);canvas.height=Math.floor(H*dpr);canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+let p,buildings,nextRow,joyX=0,joyY=0,joyOn=false,braking=false,jumpQueued=false,swingHeld=false,target=null,toastTimer=0,last=performance.now();
+const rand=(a,b)=>a+Math.random()*(b-a);
+function addRow(z){
+ for(let side of [-1,1]){
+  const count=2;
+  for(let i=0;i<count;i++){
+   let x=side*(rand(5,10)+i*rand(7,11));
+   buildings.push({x,z:z+rand(-4,4),w:rand(4,7),d:rand(9,15),h:rand(13,34),tone:Math.floor(rand(0,4)),seed:Math.random()});
+  }
+ }
+}
+function makeCity(){buildings=[];for(let z=-35;z<205;z+=24)addRow(z);nextRow=205}
+function reset(){p={x:0,z:0,y:0,vy:0,vx:0,vz:0,ground:true};target=null;swingHeld=false;braking=false;makeCity();showToast('STADEN ÄR OÄNDLIG — KÖR!')}
+function showToast(s){$('toast').textContent=s;$('toast').style.opacity=1;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').style.opacity=0,1400)}
+reset();
+function generateAhead(){while(nextRow<p.z+220){addRow(nextRow);nextRow+=24}buildings=buildings.filter(b=>b.z+b.d>p.z-100)}
+function project(x,z,y=0){const depth=z-p.z;const scale=H/(Math.max(5,depth+18));return {x:W/2+(x-p.x)*scale*1.25,y:H*.48+(depth)*scale*.25-y*scale,scale,depth}}
+function visibleBuildingPoint(b){
+ const q=project(b.x,b.z,b.h*.72);
+ return q.depth>2&&q.depth<155&&q.x>8&&q.x<W-8&&q.y>12&&q.y<H*.84;
+}
+function findTarget(){
+ let best=null,score=1e9;
+ for(const b of buildings){
+  const q=project(b.x,b.z,b.h*.72);
+  if(q.depth<3||q.depth>105||q.x<8||q.x>W-8||q.y<10||q.y>H*.82)continue;
+  const dx=q.x-W*.5,dy=q.y-H*.46,dist=Math.hypot(dx,dy);
+  if(dist<Math.min(180,W*.34)&&dist<score){score=dist;best={b,x:q.x,y:q.y,dist}}
+ }
+ return best;
+}
+function drawSky(){
+ const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#06132b');g.addColorStop(.55,'#174c7d');g.addColorStop(1,'#e68d70');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='#fff4bf';ctx.beginPath();ctx.arc(W*.78,H*.2,Math.min(W,H)*.055,0,Math.PI*2);ctx.fill();
+ for(let i=0;i<42;i++){let x=(i*97%997)/997*W,y=(i*53%317)/317*H*.43;ctx.fillStyle='rgba(255,255,255,.45)';ctx.fillRect(x,y,1.3,1.3)}
+}
+function drawBuildings(){
+ const sorted=[...buildings].sort((a,b)=>b.z-a.z);
+ for(const b of sorted){
+  const base=project(b.x,b.z,0),top=project(b.x,b.z,b.h),s=base.scale;
+  if(base.depth< -b.d||base.depth>240||s<.15)continue;
+  const ww=Math.max(2,b.w*s*1.1),hh=Math.max(2,b.h*s),x=base.x-ww/2,y=top.y;
+  const colors=[['#172c4c','#25496c','#0c1d36'],['#24344f','#3c5b78','#12233c'],['#29324b','#485777','#131d34'],['#1b3c55','#2f667e','#10263c']][b.tone];
+  ctx.fillStyle=colors[0];ctx.fillRect(x,y,ww,hh);
+  ctx.fillStyle=colors[1];ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+ww*.18,y-hh*.08);ctx.lineTo(x+ww*1.18,y-hh*.08);ctx.lineTo(x+ww,y);ctx.fill();
+  ctx.fillStyle=colors[2];ctx.beginPath();ctx.moveTo(x+ww,y);ctx.lineTo(x+ww*1.18,y-hh*.08);ctx.lineTo(x+ww*1.18,y+hh*.92);ctx.lineTo(x+ww,y+hh);ctx.fill();
+  const cols=Math.max(1,Math.floor(ww/8)),rows=Math.min(10,Math.floor(hh/12));
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+   if((c*7+r*11+Math.floor(b.seed*10))%4===0)continue;
+   ctx.fillStyle=(c+r)%3===0?'#ffd98a':'#6edfff';ctx.globalAlpha=.3+((c+r)%4)*.13;
+   ctx.fillRect(x+3+c*(ww-6)/cols,y+4+r*(hh-7)/Math.max(1,rows),Math.max(1,ww/cols*.32),Math.max(1,hh/rows*.3));
+  }ctx.globalAlpha=1;
+ }
+ // road / rooftops foreground
+ ctx.fillStyle='#17263a';ctx.beginPath();ctx.moveTo(W*.39,H);ctx.lineTo(W*.46,H*.56);ctx.lineTo(W*.54,H*.56);ctx.lineTo(W*.64,H);ctx.fill();
+ ctx.strokeStyle='#d8faff55';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(W*.5,H*.58);ctx.lineTo(W*.52,H);ctx.stroke();
+}
+function drawHero(){
+ const x=W*.5,y=H*.61+Math.max(-60,Math.min(90,p.y*2));
+ if(target&&swingHeld){
+  ctx.strokeStyle='#d7fbff';ctx.lineWidth=3;ctx.shadowColor='#00dfff';ctx.shadowBlur=9;
+  ctx.beginPath();ctx.moveTo(x,y-15);ctx.lineTo(target.x,target.y);ctx.stroke();ctx.shadowBlur=0;
+  ctx.fillStyle='#ffffff';ctx.beginPath();ctx.arc(target.x,target.y,5,0,Math.PI*2);ctx.fill();
+ }
+ // stylized little hero
+ ctx.save();ctx.translate(x,y);ctx.rotate(Math.max(-.5,Math.min(.5,p.vx*.035)));
+ ctx.strokeStyle='#071426';ctx.lineWidth=5;ctx.lineCap='round';
+ ctx.beginPath();ctx.moveTo(-5,12);ctx.lineTo(-10,24);ctx.moveTo(5,12);ctx.lineTo(11,23);ctx.stroke();
+ ctx.fillStyle='#e83a54';ctx.beginPath();ctx.ellipse(0,3,10,15,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#bcefff';ctx.beginPath();ctx.ellipse(0,-13,9,11,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#14243e';ctx.beginPath();ctx.ellipse(-3,-14,2.5,4,0,0,Math.PI*2);ctx.ellipse(3,-14,2.5,4,0,0,Math.PI*2);ctx.fill();
+ ctx.strokeStyle='#e83a54';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(-7,-1);ctx.lineTo(-17,7);ctx.moveTo(7,-1);ctx.lineTo(17,-8);ctx.stroke();
+ ctx.restore();
+}
+function draw(){
+ drawSky();drawBuildings();target=findTarget();drawHero();
+ $('dist').textContent=Math.floor(p.z);$('speed').textContent=Math.floor(Math.hypot(p.vx,p.vz)*4);
+}
+function update(dt){
+ generateAhead();
+ if(joyOn){
+  p.vx+=joyX*18*dt;
+  p.vz+=(-joyY)*17*dt;
+ }else{p.vx*=Math.pow(.92,dt*60);p.vz*=Math.pow(.985,dt*60)}
+ if(braking){p.vx*=Math.pow(.06,dt);p.vz*=Math.pow(.06,dt)}
+ p.vx=Math.max(-10,Math.min(10,p.vx));p.vz=Math.max(-4,Math.min(26,p.vz));
+ if(jumpQueued&&p.ground){p.vy=13;p.ground=false;jumpQueued=false}else jumpQueued=false;
+ if(!p.ground){p.vy-=25*dt;p.y+=p.vy*dt;if(p.y<=0){p.y=0;p.vy=0;p.ground=true}}
+ if(swingHeld&&target){
+  const dx=target.b.x-p.x,dz=target.b.z-p.z,dd=Math.hypot(dx,dz)||1;
+  p.vx+=(dx/dd)*11*dt;p.vz+=(dz/dd)*12*dt;
+ }else if(swingHeld&&!target){swingHeld=false;$('swing').classList.remove('active')}
+ p.x+=p.vx*dt;p.z+=p.vz*dt;
+ p.x=Math.max(-18,Math.min(18,p.x));
+ if(p.z<0){p.z=0;p.vz=Math.max(0,p.vz)}
+}
+function frame(now){let dt=Math.min(.035,(now-last)/1000||.016);last=now;update(dt);draw();requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+// Joystick pointer control
+const joy=$('joy'),stick=$('stick');let joyPid=null;
+function setJoy(e){const r=joy.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;let dx=e.clientX-cx,dy=e.clientY-cy;const max=r.width*.32,len=Math.hypot(dx,dy)||1;if(len>max){dx=dx/len*max;dy=dy/len*max}joyX=dx/max;joyY=dy/max;stick.style.left=(r.width/2-24+dx)+'px';stick.style.top=(r.height/2-24+dy)+'px'}
+joy.addEventListener('pointerdown',e=>{joyPid=e.pointerId;joyOn=true;joy.setPointerCapture(e.pointerId);setJoy(e)});
+joy.addEventListener('pointermove',e=>{if(joyOn&&e.pointerId===joyPid)setJoy(e)});
+function endJoy(e){if(e.pointerId===joyPid){joyOn=false;joyPid=null;joyX=joyY=0;stick.style.left='calc(50% - 24px)';stick.style.top='calc(50% - 24px)'}}
+joy.addEventListener('pointerup',endJoy);joy.addEventListener('pointercancel',endJoy);
+function holdButton(id,down,up){const el=$(id);el.addEventListener('pointerdown',e=>{e.preventDefault();el.setPointerCapture(e.pointerId);down();el.classList.add('active')});const end=e=>{up();el.classList.remove('active')};el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);el.addEventListener('lostpointercapture',end)}
+holdButton('brake',()=>braking=true,()=>braking=false);
+holdButton('jump',()=>jumpQueued=true,()=>{});
+holdButton('swing',()=>{target=findTarget();if(target)swingHeld=true;else showToast('Ingen synlig byggnad att fästa i!')},()=>{swingHeld=false;target=null});
+$('reset').addEventListener('click',reset);
+})();
+</script>
+</body>
+</html>
